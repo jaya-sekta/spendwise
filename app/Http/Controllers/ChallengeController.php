@@ -105,4 +105,8 @@ class ChallengeController extends Controller
             abort(403, 'Unauthorized');
         }
     }
+<<<<<<< HEAD
 }
+=======
+}
+>>>>>>> 3497b1b0449ac3de36406bec14c395d270bd056c
