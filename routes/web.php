@@ -9,15 +9,15 @@ use App\Http\Controllers\CategoryController;
 use App\Http\Controllers\ChallengeController;
 use App\Http\Controllers\RewardController;
 use App\Http\Controllers\UserRewardController;
+
+// Controller Admin yang sudah ada sebelumnya
 use App\Http\Controllers\Admin\DashboardController as AdminDashboardController;
 use App\Http\Controllers\Admin\CategoryController as AdminCategoryController;
 use App\Http\Controllers\Admin\RouteLogController;
 
-/*
-|--------------------------------------------------------------------------
-| Web Routes
-|--------------------------------------------------------------------------
-*/
+// ⬇️ TAMBAHAN: Import Controller Admin Baru untuk User dan Reward
+use App\Http\Controllers\Admin\UserController as AdminUserController;
+use App\Http\Controllers\Admin\RewardController as AdminRewardController;
 
 Route::get('/', function () {
     return redirect()->route('login');
@@ -25,9 +25,8 @@ Route::get('/', function () {
 
 Auth::routes();
 
-// ==========================================
 // 1. ROUTE UNTUK USER BIASA
-// ==========================================
+
 Route::middleware(['auth'])->group(function () {
 
     Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
@@ -59,7 +58,15 @@ Route::prefix('admin')->middleware(['auth', 'role:admin'])->group(function () {
         ->except(['show'])
         ->names('admin.categories');
 
-    // ⬇️ Dipindahkan ke sini, sekarang terlindungi middleware auth + role:admin
+    // ⬇️ TAMBAHAN: Rute CRUD Kelola Pengguna (Mengarah ke App\Http\Controllers\Admin\UserController)
+    Route::resource('users', AdminUserController::class)
+        ->names('admin.users');
+
+    // ⬇️ TAMBAHAN: Rute CRUD Kelola Reward & Stok (Mengarah ke App\Http\Controllers\Admin\RewardController)
+    Route::resource('rewards', AdminRewardController::class)
+        ->names('admin.rewards');
+
+    // Dipindahkan ke sini, sekarang terlindungi middleware auth + role:admin
     Route::get('/logActivity', [RouteLogController::class, 'index'])->name('admin.logger');
 
 });
