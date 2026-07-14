@@ -1,8 +1,8 @@
 <?php
-// app/Http/Controllers/ExpenseController.php
 
 namespace App\Http\Controllers;
 
+use App\Models\Challenge;
 use App\Models\Expense;
 use App\Models\Category;
 use Illuminate\Http\Request;
@@ -22,33 +22,57 @@ class ExpenseController extends Controller
 
     public function create()
     {
-        $categories = \App\Models\Category::where('user_id', auth()->id())
-        ->orWhere('is_default', true)
-        ->get();
+        $categories = Category::where('user_id', auth()->id())
+            ->orWhere('is_default', true)
+            ->get();
 
-    return view('expense.create', compact('categories'));
+        return view('expense.create', compact('categories'));
     }
 
     public function store(Request $request)
-{
-    $validated = $request->validate([
-        'expense_name' => 'required|string|max:255',
-        'category_id'  => 'required|exists:categories,id', // Memastikan ID kategori valid
-        'amount'       => 'required|numeric|min:1',
-        'expense_date' => 'required|date',
-    ]);
+    {
+        $validated = $request->validate([
+            'expense_name' => 'required|string|max:255',
+            'category_id'  => 'required|exists:categories,id',
+            'amount'       => 'required|numeric|min:1',
+            'expense_date' => 'required|date',
+        ]);
 
-    // Simpan data
-    \App\Models\Expense::create([
-        'user_id'      => auth()->id(),
-        'category_id'  => $validated['category_id'],
-        'expense_name' => $validated['expense_name'],
-        'amount'       => $validated['amount'],
-        'expense_date' => $validated['expense_date'],
-    ]);
+        // Hitung total pengeluaran bulan ini di kategori yang sama
+        $category   = Category::findOrFail($validated['category_id']);
+        $totalMonth = Expense::where('user_id', Auth::id())
+            ->where('category_id', $category->id)
+            ->whereMonth('expense_date', now()->month)
+            ->whereYear('expense_date', now()->year)
+            ->sum('amount');
 
-    return redirect()->route('expense.index')->with('success', 'Pengeluaran berhasil dicatat.');
-}
+        // ✅ Cek apakah setelah ditambah expense baru akan over limit
+        $isOverLimit = ($totalMonth + $validated['amount']) > $category->monthly_limit;
+
+        // Simpan expense
+        Expense::create([
+            'user_id'      => Auth::id(),
+            'category_id'  => $validated['category_id'],
+            'expense_name' => $validated['expense_name'],
+            'amount'       => $validated['amount'],
+            'expense_date' => $validated['expense_date'],
+            'is_over_limit' => $isOverLimit,
+        ]);
+
+        // ✅ Kurangi nyawa challenge jika over limit
+        if ($isOverLimit) {
+            $this->deductChallengeLife($validated['category_id']);
+        }
+
+        $message = $isOverLimit
+            ? 'Pengeluaran dicatat, tapi kamu sudah over budget bulan ini!'
+            : 'Pengeluaran berhasil dicatat.';
+
+        return redirect()->route('expense.index')->with(
+            $isOverLimit ? 'warning' : 'success',
+            $message
+        );
+    }
 
     public function show(Expense $expense)
     {
@@ -61,7 +85,9 @@ class ExpenseController extends Controller
     {
         $this->authorizeOwner($expense->user_id);
 
-        $categories = Category::where('user_id', Auth::id())->get();
+        $categories = Category::where('user_id', Auth::id())
+            ->orWhere('is_default', true)
+            ->get();
 
         return view('expense.edit', compact('expense', 'categories'));
     }
@@ -77,22 +103,39 @@ class ExpenseController extends Controller
             'expense_date' => 'required|date',
         ]);
 
-        $category    = Category::findOrFail($validated['category_id']);
-        $totalMonth  = Expense::where('category_id', $category->id)
+        $category   = Category::findOrFail($validated['category_id']);
+        $totalMonth = Expense::where('user_id', Auth::id())
+            ->where('category_id', $category->id)
             ->whereMonth('expense_date', now()->month)
-            ->where('id', '!=', $expense->id)
+            ->whereYear('expense_date', now()->year)
+            ->where('id', '!=', $expense->id) // exclude expense yang sedang diedit
             ->sum('amount');
-        $isOverLimit = ($totalMonth + $validated['amount']) > $category->monthly_limit;
+
+        $wasOverLimit = $expense->is_over_limit;
+        $isOverLimit  = ($totalMonth + $validated['amount']) > $category->monthly_limit;
 
         $expense->update([
-            'category_id'  => $validated['category_id'],
-            'expense_name' => $validated['expense_name'],
-            'amount'       => $validated['amount'],
-            'expense_date' => $validated['expense_date'],
+            'category_id'   => $validated['category_id'],
+            'expense_name'  => $validated['expense_name'],
+            'amount'        => $validated['amount'],
+            'expense_date'  => $validated['expense_date'],
             'is_over_limit' => $isOverLimit,
         ]);
 
-        return redirect()->route('expense.index')->with('success', 'Pengeluaran berhasil diupdate.');
+        // ✅ Kurangi nyawa hanya kalau sebelumnya tidak over limit,
+        //    sekarang jadi over limit (hindari kurangi 2x saat edit)
+        if ($isOverLimit && ! $wasOverLimit) {
+            $this->deductChallengeLife($validated['category_id']);
+        }
+
+        $message = $isOverLimit
+            ? 'Pengeluaran diupdate, tapi kamu sudah over budget bulan ini!'
+            : 'Pengeluaran berhasil diupdate.';
+
+        return redirect()->route('expense.index')->with(
+            $isOverLimit ? 'warning' : 'success',
+            $message
+        );
     }
 
     public function destroy(Expense $expense)
@@ -103,7 +146,28 @@ class ExpenseController extends Controller
         return redirect()->route('expense.index')->with('success', 'Pengeluaran berhasil dihapus.');
     }
 
-    // Helper cek kepemilikan data
+    // ✅ Kurangi nyawa challenge aktif yang kategorinya sama
+    private function deductChallengeLife(int $categoryId): void
+    {
+        $challenge = Challenge::where('user_id', Auth::id())
+            ->where('category_id', $categoryId)
+            ->where('status', 'active')
+            ->first();
+
+        if (! $challenge) return;
+
+        if ($challenge->remaining_lives > 1) {
+            // Masih ada nyawa tersisa, kurangi 1
+            $challenge->decrement('remaining_lives');
+        } else {
+            // Nyawa habis → challenge gagal
+            $challenge->update([
+                'remaining_lives' => 0,
+                'status'          => 'failed',
+            ]);
+        }
+    }
+
     private function authorizeOwner(int $userId): void
     {
         if ($userId !== Auth::id()) {

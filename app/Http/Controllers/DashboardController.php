@@ -13,52 +13,56 @@ class DashboardController extends Controller
 {
     public function index()
     {
-        $userId = Auth::id();
+        $userId       = Auth::id();
         $currentMonth = Carbon::now()->month;
-        $currentYear = Carbon::now()->year;
+        $currentYear  = Carbon::now()->year;
 
-        // 1. Hitung Total Pengeluaran & Sisa Anggaran Bulan Ini
+        // 1. Total pengeluaran bulan ini
         $totalPengeluaran = Expense::where('user_id', $userId)
             ->whereMonth('expense_date', $currentMonth)
             ->whereYear('expense_date', $currentYear)
             ->sum('amount');
 
-        $totalAnggaran = Category::where('user_id', $userId)->sum('monthly_limit');
-        $sisaAnggaran = $totalAnggaran - $totalPengeluaran;
+        // ✅ Fix: include kategori bawaan (is_default=true) + milik user sendiri
+        $totalAnggaran = Category::visibleTo($userId)->sum('monthly_limit');
+        $sisaAnggaran  = $totalAnggaran - $totalPengeluaran;
 
-        // 2. Hitung Kategori yang Over Budget
-        // Mengambil kategori user, lalu mengecek apakah pengeluaran bulan ini melebihi limit
-        $categories = Category::where('user_id', $userId)->get();
+        // 2. Hitung kategori over budget (include bawaan)
+        $categories    = Category::visibleTo($userId)->get();
         $overBudgetCount = 0;
-        
+
         foreach ($categories as $category) {
-            $expensePerCategory = Expense::where('category_id', $category->id)
+            $spent = Expense::where('user_id', $userId)
+                ->where('category_id', $category->id)
                 ->whereMonth('expense_date', $currentMonth)
+                ->whereYear('expense_date', $currentYear)
                 ->sum('amount');
-                
-            if ($expensePerCategory > $category->monthly_limit) {
+
+            if ($spent > $category->monthly_limit) {
                 $overBudgetCount++;
             }
         }
 
-        // 3. Ambil 5 Transaksi Terakhir
+        // 3. 5 Transaksi terakhir
         $recentExpenses = Expense::with('category')
             ->where('user_id', $userId)
             ->latest('expense_date')
             ->take(5)
             ->get();
 
-        // 4. Ambil 1 Challenge Aktif
+        // 4. Challenge aktif
         $activeChallenge = Challenge::with('category')
             ->where('user_id', $userId)
             ->where('status', 'active')
+            ->latest()
             ->first();
 
-        // 5. Siapkan Data untuk Chart (Pengeluaran per Kategori)
+        // 5. Data chart
         $chartData = Expense::with('category')
             ->selectRaw('category_id, sum(amount) as total')
             ->where('user_id', $userId)
             ->whereMonth('expense_date', $currentMonth)
+            ->whereYear('expense_date', $currentYear)
             ->groupBy('category_id')
             ->get();
 
